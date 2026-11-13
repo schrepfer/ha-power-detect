@@ -1,0 +1,17 @@
+{
+  "domain": "power_detect",
+  "name": "Power Detect",
+  "categories": [
+    "energy.backup_power"
+  ],
+  "codeowners": [
+    "@schrepfer"
+  ],
+  "config_flow": false,
+  "documentation": "https://github.com/schrepfer/ha-power-detect",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/schrepfer/ha-power-detect/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

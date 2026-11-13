@@ -1,0 +1,20 @@
+# =============================================================================
+# configuration.yaml addition for `power_detect`
+# Automatically creates BOTH:
+#   - `binary_sensor.power_detect` (`on` when powered, `off` on battery/shutdown)
+#   - `sensor.power_detect`        (`powered`, `battery`, `shutdown`, `unknown`)
+# And fires the `power_detect` Home Assistant bus event on status transitions.
+# =============================================================================
+
+power_detect:
+  url: http://power.x.wabb.it:1999
+
+# Multi-server example:
+# power_detect:
+#   scan_interval: 10
+#   servers:
+#     - name: House Power
+#       url: http://power.x.wabb.it:1999          # -> binary_sensor.house_power & sensor.house_power
+#     - name: Workshop Power
+#       host: workshop-power.x.wabb.it
+#       port: 1999                                # -> binary_sensor.workshop_power & sensor.workshop_power
