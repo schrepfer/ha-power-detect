@@ -44,6 +44,7 @@ class PowerDetectStatusSensor(
     """Enum sensor exposing the fine-grained `power-detect` status."""
 
     _attr_device_class = SensorDeviceClass.ENUM
+    _attr_translation_key = "power_status"
     _attr_options = list(VALID_STATUSES)
 
     def __init__(self, coordinator: PowerDetectCoordinator) -> None:

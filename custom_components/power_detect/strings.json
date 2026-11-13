@@ -1,0 +1,14 @@
+{
+  "entity": {
+    "sensor": {
+      "power_status": {
+        "state": {
+          "battery": "Battery",
+          "powered": "Powered",
+          "shutdown": "Shutdown",
+          "unknown": "Unknown"
+        }
+      }
+    }
+  }
+}

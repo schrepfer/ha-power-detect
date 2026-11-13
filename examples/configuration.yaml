@@ -3,7 +3,6 @@
 # Automatically creates BOTH:
 #   - `binary_sensor.power_detect` (`on` when powered, `off` on battery/shutdown)
 #   - `sensor.power_detect`        (`powered`, `battery`, `shutdown`, `unknown`)
-# And fires the `power_detect` Home Assistant bus event on status transitions.
 # =============================================================================
 
 power_detect:

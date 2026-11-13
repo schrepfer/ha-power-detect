@@ -5,20 +5,20 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](custom_components/power_detect/manifest.json)
 [![Validate](https://github.com/schrepfer/ha-power-detect/actions/workflows/validate.yml/badge.svg)](https://github.com/schrepfer/ha-power-detect/actions/workflows/validate.yml)
 
-A lightweight Home Assistant custom integration that polls a [**`power-detect`**](https://github.com/schrepfer/power-detect) HTTP server (the Home Assistant equivalent of [`power-detect-monitor.sh`](https://github.com/schrepfer/power-detect/blob/main/TrueNAS/power-detect-monitor.sh)) to expose utility power state, fine-grained outage status, and automation events.
+A lightweight Home Assistant custom integration that polls a [**`power-detect`**](https://github.com/schrepfer/power-detect) HTTP server (the Home Assistant equivalent of [`power-detect-monitor.sh`](https://github.com/schrepfer/power-detect/blob/main/TrueNAS/power-detect-monitor.sh)) to expose utility power state and fine-grained outage status.
 
-For each configured `power-detect` server, `power_detect` automatically provides:
+For each configured `power-detect` server, `power_detect` automatically creates **two** entities:
 * **`binary_sensor.<slug>`** (`device_class: power`) — **`on`** while mains power is present (`powered`), **`off`** during an outage (`battery` or `shutdown`), and **`unknown`** when the endpoint cannot be reached.
-* **`sensor.<slug>`** (`device_class: enum`) — Reports the exact fine-grained status: **`powered`**, **`battery`**, **`shutdown`**, or **`unknown`**.
-* **`power_detect` Bus Event** — Fired whenever status changes, carrying `status`, `previous_status`, `was_outage`, `outage_duration_seconds`, and server metadata in `event_data` (which Home Assistant's `trigger: event` can match directly).
+* **`sensor.<slug>`** (`device_class: enum`) — Reports the exact fine-grained status: **`powered`**, **`battery`**, **`shutdown`**, or **`unknown`** (rendered in the UI as **Powered**, **Battery**, **Shutdown**, and **Unknown**).
 
 ---
 
 ## Features
 
 * **Zero External Dependencies** — Uses Home Assistant's built-in async `aiohttp` session with a fast `3s` timeout (matching `curl --max-time 3` in `power-detect-monitor.sh`) and a quick single retry to absorb transient LAN packet drops.
-* **Network-Blip Safe** — If the `power-detect` host reboots or briefly drops off the LAN, `sensor.<slug>` and `binary_sensor.<slug>` become `unknown` (rather than falsely flipping `off` as a power outage), and recovery sets `was_outage: false`.
-* **Outage Duration Tracking** — Tracks when an outage (`battery` / `shutdown`) started in your Home Assistant server's local timezone and includes `outage_started` and `outage_duration_seconds` in `power_detect` events.
+* **Network-Blip Safe** — If the `power-detect` host reboots or briefly drops off the LAN, `sensor.<slug>` and `binary_sensor.<slug>` become `unknown` (rather than falsely flipping `off` as a power outage), so `from: "off" -> to: "on"` only triggers after a genuine outage.
+* **Outage Timestamps & Duration** — Tracks `outage_started` in your Home Assistant server's local timezone while an outage is active and records `last_outage_seconds` when utility power returns.
+* **Translated Enum Labels** — Raw states stay standard Home Assistant lowercase (`powered`, `battery`, `shutdown`, `unknown`) for YAML/Jinja2 while dashboards and visual automation dropdowns display **Powered**, **Battery**, **Shutdown**, and **Unknown**.
 * **Clean Logging** — Logs connectivity loss once on failure and once on recovery without spamming Home Assistant logs during extended outages.
 * **Single or Multi-Server** — Configure one `url:` directly under `power_detect:` or monitor multiple endpoints via `servers:`.
 
@@ -111,10 +111,10 @@ You may configure either a **single server directly** under `power_detect:` or a
 
 ## Entities & State Attributes
 
-| Entity | Device Class | States | Description |
-| :--- | :--- | :--- | :--- |
-| **`binary_sensor.<slug>`** | `power` | `on`, `off`, `unknown` | `on` when mains power is present (`powered`); `off` during an outage (`battery` or `shutdown`); `unknown` if unreachable. |
-| **`sensor.<slug>`** | `enum` | `powered`, `battery`, `shutdown`, `unknown` | Exact fine-grained `power-detect` status. |
+| Entity | Device Class | Raw States | UI Display | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **`binary_sensor.<slug>`** | `power` | `on`, `off`, `unknown` | Powered / Not powered / Unknown | `on` when mains power is present (`powered`); `off` during an outage (`battery` or `shutdown`); `unknown` if unreachable. |
+| **`sensor.<slug>`** | `enum` | `powered`, `battery`, `shutdown`, `unknown` | Powered / Battery / Shutdown / Unknown | Exact fine-grained `power-detect` status. |
 
 Both entities expose the following state attributes:
 
@@ -129,34 +129,8 @@ Both entities expose the following state attributes:
 | `last_checked` | `"2026-11-13T12:15:10-08:00"` | Local ISO-8601 timestamp of the latest poll. |
 | `last_changed` | `"2026-11-13T12:10:00-08:00"` | Local ISO-8601 timestamp when `status` last changed. |
 | `outage_started` | `"2026-11-13T12:10:00-08:00"` | Local ISO-8601 timestamp when the active outage began (`null` while `powered`). |
+| `last_outage_seconds` | `420.0` | Duration in seconds of the most recently resolved outage (`null` before any outage). |
 | `last_error` | `null` | Error message from the latest failed poll (`null` when reachable). |
-
----
-
-## `power_detect` Event
-
-Whenever a monitored server's status changes after initial startup, `power_detect` fires a **`power_detect`** event on the Home Assistant event bus.
-
-Home Assistant's `trigger: event` natively filters on any subset of `event_data` (such as `status: battery`, `status: shutdown`, or `was_outage: true`), or you can omit `event_data` to handle all transitions in a single automation.
-
-### Event Data Payload (`trigger.event.data`)
-
-```yaml
-name: "Power Detect"
-slug: "power_detect"
-entity_id: "sensor.power_detect"
-binary_sensor_id: "binary_sensor.power_detect"
-url: "http://power.x.wabb.it:1999"
-status: "shutdown"
-previous_status: "battery"
-last_known_status: "battery"
-power_present: false
-reachable: true
-was_outage: true
-changed_at: "2026-11-13T12:15:00-08:00"
-outage_started: "2026-11-13T12:10:00-08:00"
-outage_duration_seconds: 300.0
-```
 
 ---
 
@@ -169,15 +143,14 @@ automation:
   - alias: "Power Outage - Switched to Battery"
     description: Announces and pushes an alert as soon as mains power is lost
     triggers:
-      - trigger: event
-        event_type: power_detect
-        event_data:
-          status: battery
+      - trigger: state
+        entity_id: sensor.power_detect
+        to: battery
     actions:
       - action: notify.notify
         data:
           title: "⚡ Power Outage"
-          message: "Utility power lost ({{ trigger.event.data.name }} is on battery)."
+          message: "Utility power lost ({{ state_attr('sensor.power_detect', 'name') }} is on battery)."
 ```
 
 ### 2. Critical Action When Grace Period Expires (`shutdown`)
@@ -187,37 +160,35 @@ automation:
   - alias: "Power Outage - Shutdown Threshold Reached"
     description: Alerts when power-detect enters shutdown state after the grace period
     triggers:
-      - trigger: event
-        event_type: power_detect
-        event_data:
-          status: shutdown
+      - trigger: state
+        entity_id: sensor.power_detect
+        to: shutdown
     actions:
       - action: notify.notify
         data:
           title: "🛑 Power Critical (Shutdown)"
-          message: >-
-            Power has been out for {{ (trigger.event.data.outage_duration_seconds | int) // 60 }}m;
-            servers are shutting down.
+          message: "Grace period expired; servers are shutting down."
 ```
 
 ### 3. Notify When Utility Power Is Restored After an Outage
+
+Because a LAN blip sets `binary_sensor.power_detect` to `unknown` rather than `off`, triggering on `from: "off"` → `to: "on"` only fires when recovering from a real outage:
 
 ```yaml
 automation:
   - alias: "Power Restored After Outage"
     description: Sends a recovery notification with total outage duration
     triggers:
-      - trigger: event
-        event_type: power_detect
-        event_data:
-          status: powered
-          was_outage: true
+      - trigger: state
+        entity_id: binary_sensor.power_detect
+        from: "off"
+        to: "on"
     actions:
       - action: notify.notify
         data:
           title: "✅ Power Restored"
           message: >-
-            Utility power restored after {{ (trigger.event.data.outage_duration_seconds | float(0)) | round(0) }}s.
+            Utility power restored after {{ state_attr('binary_sensor.power_detect', 'last_outage_seconds') | int(0) }}s.
 ```
 
 ### 4. Checking Power Status in Conditions & Templates

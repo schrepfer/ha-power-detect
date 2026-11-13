@@ -116,7 +116,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 class PowerDetectCoordinator(DataUpdateCoordinator[PowerSnapshot]):
-    """Polls a single `power-detect` HTTP server and fires `power_detect` bus events."""
+    """Polls a single `power-detect` HTTP server."""
 
     def __init__(
         self,
@@ -136,7 +136,7 @@ class PowerDetectCoordinator(DataUpdateCoordinator[PowerSnapshot]):
         self._was_unreachable = False
 
     async def _async_update_data(self) -> PowerSnapshot:
-        """Poll `power-detect`, update state machine, and emit `power_detect` event on change."""
+        """Poll `power-detect` and update entity snapshot."""
         now = dt_util.now()
         try:
             status = await self.client.async_fetch_status()
@@ -149,7 +149,7 @@ class PowerDetectCoordinator(DataUpdateCoordinator[PowerSnapshot]):
                     err,
                 )
                 self._was_unreachable = True
-            snapshot, event = self.tracker.record_poll(
+            snapshot, changed = self.tracker.record_poll(
                 PowerStatus.UNKNOWN,
                 reachable=False,
                 now=now,
@@ -164,15 +164,14 @@ class PowerDetectCoordinator(DataUpdateCoordinator[PowerSnapshot]):
                     status.value,
                 )
                 self._was_unreachable = False
-            snapshot, event = self.tracker.record_poll(
+            snapshot, changed = self.tracker.record_poll(
                 status,
                 reachable=True,
                 now=now,
             )
 
-        if event is not None:
+        if changed:
             self._log_transition(snapshot)
-            self.hass.bus.async_fire(event.event_type, event.data)
 
         return snapshot
 

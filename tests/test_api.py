@@ -1,4 +1,4 @@
-"""Unit tests for the `power_detect` client, URL/slug resolution, and state-transition events."""
+"""Unit tests for the `power_detect` client, URL/slug resolution, and state-transition tracker."""
 
 from __future__ import annotations
 
@@ -56,13 +56,13 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    def __init__(self, outcomes: list[object]) -> None:
-        self._outcomes = list(outcomes)
+    def __init__(self, steps: list[object]) -> None:
+        self._steps = list(steps)
         self.calls = 0
 
     def get(self, url: str, timeout: object = None) -> _FakeResponse:
         self.calls += 1
-        item = self._outcomes.pop(0)
+        item = self._steps.pop(0)
         if isinstance(item, Exception):
             raise item
         assert isinstance(item, _FakeResponse)
@@ -79,7 +79,7 @@ class _FakeAiohttp:
 
 
 class PowerDetectApiTests(unittest.TestCase):
-    """Tests for status parsing, server config resolution, and `power_detect` event transitions."""
+    """Tests for status parsing, server config resolution, and state/outage transitions."""
 
     def test_parse_status_response_valid_and_invalid(self) -> None:
         self.assertEqual(api.parse_status_response("powered\n"), api.PowerStatus.POWERED)
@@ -128,7 +128,6 @@ class PowerDetectApiTests(unittest.TestCase):
         self.assertEqual(multi[1].name, "Workshop Power")
         self.assertEqual(multi[1].entity_slug, "workshop_power")
 
-        # Duplicate slugs disambiguate deterministically
         dups = api.resolve_server_configs(
             [
                 {"host": "10.0.0.10", "slug": "ups"},
@@ -137,74 +136,62 @@ class PowerDetectApiTests(unittest.TestCase):
         )
         self.assertEqual([c.entity_slug for c in dups], ["ups_1", "ups_2"])
 
-    def test_full_outage_lifecycle_and_single_event(self) -> None:
+    def test_full_outage_lifecycle_and_duration_attributes(self) -> None:
         cfg = api.resolve_server_configs([{"url": "http://power.x.wabb.it:1999"}])[0]
         tracker = api.PowerTrackerState(cfg)
         pacific = ZoneInfo("America/Los_Angeles")
         t0 = datetime(2026, 11, 13, 12, 0, 0, tzinfo=pacific)
 
-        # 1. Startup poll -> NO event fired
-        snap0, ev0 = tracker.record_poll(
+        # 1. Startup poll -> changed=False
+        snap0, changed0 = tracker.record_poll(
             api.PowerStatus.POWERED, reachable=True, now=t0
         )
-        self.assertIsNone(ev0)
+        self.assertFalse(changed0)
         self.assertTrue(snap0.power_present)
         self.assertEqual(snap0.status, api.PowerStatus.POWERED)
         self.assertIsNone(snap0.outage_started)
+        self.assertIsNone(snap0.last_outage_seconds)
 
-        # 2. Steady powered poll -> NO event fired
-        snap1, ev1 = tracker.record_poll(
+        # 2. Steady powered poll -> changed=False
+        snap1, changed1 = tracker.record_poll(
             api.PowerStatus.POWERED, reachable=True, now=t0 + timedelta(seconds=10)
         )
-        self.assertIsNone(ev1)
+        self.assertFalse(changed1)
         self.assertEqual(snap1.last_changed, t0)
 
         # 3. Mains power lost -> switches to `battery`
         t_loss = t0 + timedelta(seconds=20)
-        snap2, ev2 = tracker.record_poll(
+        snap2, changed2 = tracker.record_poll(
             api.PowerStatus.BATTERY, reachable=True, now=t_loss
         )
+        self.assertTrue(changed2)
         self.assertFalse(snap2.power_present)
+        self.assertEqual(snap2.previous_status, api.PowerStatus.POWERED)
         self.assertEqual(snap2.outage_started, t_loss)
-        assert ev2 is not None
-        self.assertEqual(ev2.event_type, "power_detect")
-        self.assertEqual(ev2.data["entity_id"], "sensor.power_detect")
-        self.assertEqual(ev2.data["binary_sensor_id"], "binary_sensor.power_detect")
-        self.assertEqual(ev2.data["previous_status"], "powered")
-        self.assertEqual(ev2.data["status"], "battery")
-        self.assertFalse(ev2.data["was_outage"])
-        self.assertEqual(ev2.data["changed_at"], "2026-11-13T12:00:20-08:00")
-        self.assertEqual(ev2.data["outage_duration_seconds"], 0.0)
 
         # 4. Grace period (300s) expires -> switches to `shutdown`
         t_shutdown = t_loss + timedelta(seconds=300)
-        snap3, ev3 = tracker.record_poll(
+        snap3, changed3 = tracker.record_poll(
             api.PowerStatus.SHUTDOWN, reachable=True, now=t_shutdown
         )
+        self.assertTrue(changed3)
         self.assertFalse(snap3.power_present)
+        self.assertEqual(snap3.previous_status, api.PowerStatus.BATTERY)
         self.assertEqual(snap3.outage_started, t_loss)
-        assert ev3 is not None
-        self.assertEqual(ev3.event_type, "power_detect")
-        self.assertEqual(ev3.data["status"], "shutdown")
-        self.assertTrue(ev3.data["was_outage"])
-        self.assertEqual(ev3.data["outage_duration_seconds"], 300.0)
 
         # 5. Mains power restored 120s later -> switches back to `powered`
         t_restored = t_shutdown + timedelta(seconds=120)
-        snap4, ev4 = tracker.record_poll(
+        snap4, changed4 = tracker.record_poll(
             api.PowerStatus.POWERED, reachable=True, now=t_restored
         )
+        self.assertTrue(changed4)
         self.assertTrue(snap4.power_present)
         self.assertIsNone(snap4.outage_started)
-        assert ev4 is not None
-        self.assertEqual(ev4.event_type, "power_detect")
-        self.assertEqual(ev4.data["status"], "powered")
-        self.assertTrue(ev4.data["was_outage"])
-        self.assertEqual(ev4.data["last_known_status"], "shutdown")
-        self.assertEqual(ev4.data["outage_duration_seconds"], 420.0)
-        self.assertEqual(
-            ev4.data["outage_started"], t_loss.isoformat(timespec="seconds")
-        )
+        self.assertEqual(snap4.last_outage_seconds, 420.0)
+
+        attrs = api.format_snapshot_attributes(cfg, snap4)
+        self.assertEqual(attrs["last_outage_seconds"], 420.0)
+        self.assertEqual(attrs["last_checked"], "2026-11-13T12:07:20-08:00")
 
     def test_network_blip_unknown_is_not_treated_as_outage(self) -> None:
         cfg = api.resolve_server_configs([{"url": "http://power.x.wabb.it:1999"}])[0]
@@ -215,31 +202,26 @@ class PowerDetectApiTests(unittest.TestCase):
         tracker.record_poll(api.PowerStatus.POWERED, reachable=True, now=t0)
 
         # Network unreachable -> `unknown` (`power_present` is None, not False!)
-        snap_unk, ev_unk = tracker.record_poll(
+        snap_unk, changed_unk = tracker.record_poll(
             api.PowerStatus.UNKNOWN,
             reachable=False,
             now=t0 + timedelta(seconds=10),
             error="Connection timed out",
         )
+        self.assertTrue(changed_unk)
         self.assertIsNone(snap_unk.power_present)
         self.assertFalse(snap_unk.reachable)
         self.assertEqual(snap_unk.last_known_status, api.PowerStatus.POWERED)
-        assert ev_unk is not None
-        self.assertEqual(ev_unk.event_type, "power_detect")
-        self.assertEqual(ev_unk.data["status"], "unknown")
-        self.assertEqual(ev_unk.data["error"], "Connection timed out")
 
-        # Network recovers while power never failed -> `was_outage` is False!
-        snap_rec, ev_rec = tracker.record_poll(
+        # Network recovers while power never failed -> `last_outage_seconds` stays None
+        snap_rec, changed_rec = tracker.record_poll(
             api.PowerStatus.POWERED,
             reachable=True,
             now=t0 + timedelta(seconds=20),
         )
+        self.assertTrue(changed_rec)
         self.assertTrue(snap_rec.power_present)
-        assert ev_rec is not None
-        self.assertEqual(ev_rec.event_type, "power_detect")
-        self.assertFalse(ev_rec.data["was_outage"])
-        self.assertIsNone(ev_rec.data["outage_duration_seconds"])
+        self.assertIsNone(snap_rec.last_outage_seconds)
 
         attrs = api.format_snapshot_attributes(cfg, snap_rec)
         self.assertEqual(attrs["status"], "powered")

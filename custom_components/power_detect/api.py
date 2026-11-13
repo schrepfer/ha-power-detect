@@ -31,7 +31,6 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SLUG,
     DEFAULT_TIMEOUT,
-    EVENT_POWER_DETECT,
     STATUS_BATTERY,
     STATUS_POWERED,
     STATUS_SHUTDOWN,
@@ -204,14 +203,6 @@ def is_power_present(status: PowerStatus) -> bool | None:
 
 
 @dataclass(slots=True)
-class PowerEvent:
-    """Home Assistant bus event emitted on a `PowerStatus` transition."""
-
-    event_type: str
-    data: dict[str, Any]
-
-
-@dataclass(slots=True)
 class PowerSnapshot:
     """Point-in-time state snapshot for a monitored `power-detect` server."""
 
@@ -223,6 +214,7 @@ class PowerSnapshot:
     last_checked: datetime
     last_changed: datetime
     outage_started: datetime | None
+    last_outage_seconds: float | None = None
     last_error: str | None = None
 
 
@@ -248,12 +240,13 @@ def format_snapshot_attributes(
             if snapshot.outage_started
             else None
         ),
+        "last_outage_seconds": snapshot.last_outage_seconds,
         "last_error": snapshot.last_error,
     }
 
 
 class PowerTrackerState:
-    """Tracks `PowerStatus` transitions, outage durations, and `power_detect` bus events."""
+    """Tracks `PowerStatus` transitions and outage durations for one server."""
 
     def __init__(self, config: ServerConfig) -> None:
         self.config = config
@@ -262,6 +255,7 @@ class PowerTrackerState:
         self._last_known_status: PowerStatus | None = None
         self._last_changed: datetime | None = None
         self._outage_started: datetime | None = None
+        self._last_outage_seconds: float | None = None
 
     def record_poll(
         self,
@@ -270,22 +264,23 @@ class PowerTrackerState:
         reachable: bool,
         now: datetime,
         error: str | None = None,
-    ) -> tuple[PowerSnapshot, PowerEvent | None]:
-        """Record a poll result and return the updated snapshot plus an optional transition event."""
+    ) -> tuple[PowerSnapshot, bool]:
+        """Record a poll result and return `(snapshot, status_changed_after_startup)`."""
         prior_status = self._status
-        prior_known = self._last_known_status
         prior_outage_started = self._outage_started
 
         if status in (PowerStatus.BATTERY, PowerStatus.SHUTDOWN):
             if self._outage_started is None:
                 self._outage_started = now
         elif status == PowerStatus.POWERED:
+            if prior_outage_started is not None:
+                self._last_outage_seconds = round(
+                    max(0.0, (now - prior_outage_started).total_seconds()), 1
+                )
             self._outage_started = None
 
-        event: PowerEvent | None = None
-
+        changed = False
         if prior_status is None:
-            # Initial startup poll: initialize state without firing transition events.
             self._status = status
             self._previous_status = None
             self._last_changed = now
@@ -295,46 +290,9 @@ class PowerTrackerState:
             self._previous_status = prior_status
             self._status = status
             self._last_changed = now
-
-            was_outage = prior_known in (PowerStatus.BATTERY, PowerStatus.SHUTDOWN)
-            relevant_outage_start = (
-                prior_outage_started
-                if status == PowerStatus.POWERED
-                else self._outage_started
-            )
-            outage_duration = (
-                round(max(0.0, (now - relevant_outage_start).total_seconds()), 1)
-                if relevant_outage_start is not None
-                else None
-            )
-
             if status != PowerStatus.UNKNOWN:
                 self._last_known_status = status
-
-            event_data: dict[str, Any] = {
-                "name": self.config.name,
-                "slug": self.config.entity_slug,
-                "entity_id": f"sensor.{self.config.entity_slug}",
-                "binary_sensor_id": f"binary_sensor.{self.config.entity_slug}",
-                "url": self.config.url,
-                "status": status.value,
-                "previous_status": prior_status.value,
-                "last_known_status": prior_known.value if prior_known else None,
-                "power_present": is_power_present(status),
-                "reachable": reachable,
-                "was_outage": was_outage,
-                "changed_at": now.isoformat(timespec="seconds"),
-                "outage_started": (
-                    relevant_outage_start.isoformat(timespec="seconds")
-                    if relevant_outage_start
-                    else None
-                ),
-                "outage_duration_seconds": outage_duration,
-            }
-            if error:
-                event_data["error"] = error
-
-            event = PowerEvent(EVENT_POWER_DETECT, event_data)
+            changed = True
 
         assert self._status is not None
         assert self._last_changed is not None
@@ -348,9 +306,10 @@ class PowerTrackerState:
             last_checked=now,
             last_changed=self._last_changed,
             outage_started=self._outage_started,
+            last_outage_seconds=self._last_outage_seconds,
             last_error=error,
         )
-        return snapshot, event
+        return snapshot, changed
 
 
 class PowerDetectClient:

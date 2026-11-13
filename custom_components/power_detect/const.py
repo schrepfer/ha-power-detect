@@ -34,6 +34,3 @@ VALID_STATUSES: tuple[str, ...] = (
     STATUS_SHUTDOWN,
     STATUS_UNKNOWN,
 )
-
-# Home Assistant bus event
-EVENT_POWER_DETECT = "power_detect"
